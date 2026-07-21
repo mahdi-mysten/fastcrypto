@@ -7,6 +7,7 @@ use fastcrypto::{
     ed25519::{Ed25519KeyPair, Ed25519PrivateKey, Ed25519PublicKey, Ed25519Signature},
     encoding::{Encoding, Hex},
     error::FastCryptoError,
+    falcon512::{Falcon512KeyPair, Falcon512PrivateKey, Falcon512PublicKey, Falcon512Signature},
     secp256k1::{
         recoverable::Secp256k1RecoverableSignature, Secp256k1KeyPair, Secp256k1PrivateKey,
         Secp256k1PublicKey, Secp256k1Signature,
@@ -39,7 +40,10 @@ struct KeygenArguments {
     /// Name of the signature scheme.
     #[clap(long)]
     scheme: String,
-    /// Hex encoded 32-byte seed for deterministic key generation. e.g. 0000000000000000000000000000000000000000000000000000000000000000.
+    /// Hex encoded seed for deterministic key generation: 32 bytes for most
+    /// schemes (fed to a StdRng), 48 bytes for falcon512 (consumed directly by
+    /// the reference keygen, so the same seed reproduces the key pair in other
+    /// implementations such as @noble/post-quantum).
     #[clap(long)]
     seed: String,
 }
@@ -52,6 +56,7 @@ enum SignatureScheme {
     Secp256r1Recoverable,
     BLS12381MinSig,
     BLS12381MinPk,
+    Falcon512,
 }
 
 impl FromStr for SignatureScheme {
@@ -66,6 +71,7 @@ impl FromStr for SignatureScheme {
             "secp256r1-rec" => Ok(SignatureScheme::Secp256r1Recoverable),
             "bls12381-minsig" => Ok(SignatureScheme::BLS12381MinSig),
             "bls12381-minpk" => Ok(SignatureScheme::BLS12381MinPk),
+            "falcon512" => Ok(SignatureScheme::Falcon512),
             _ => Err(Error::other("Invalid signature scheme.")),
         }
     }
@@ -120,10 +126,29 @@ fn execute(cmd: Command) -> Result<(), FastCryptoError> {
     match cmd {
         Command::Keygen(arg) => {
             let arr = Hex::decode(&arg.seed).map_err(|_| FastCryptoError::InvalidInput)?;
+            let scheme = SignatureScheme::from_str(&arg.scheme);
+
+            // falcon512 consumes the seed bytes directly — 48 bytes, the
+            // reference SHAKE256 keygen seed — so the same seed value
+            // reproduces the same key pair in other implementations of the
+            // reference keygen (e.g. @noble/post-quantum). The remaining
+            // schemes draw from a 32-byte-seeded StdRng, whose ChaCha12
+            // stream is a rand-crate convention no other stack replays.
+            if let Ok(SignatureScheme::Falcon512) = scheme {
+                let seed: [u8; 48] = arr.try_into().map_err(|_| FastCryptoError::InvalidInput)?;
+                let kp = Falcon512KeyPair::generate_from_seed(&seed);
+                println!(
+                    "Private key in hex: {:?}",
+                    Hex::encode(kp.copy().private().as_ref())
+                );
+                println!("Public key in hex: {:?}", Hex::encode(kp.public().as_ref()));
+                return Ok(());
+            }
+
             let seed: [u8; 32] = arr.try_into().map_err(|_| FastCryptoError::InvalidInput)?;
             let rng = &mut StdRng::from_seed(seed);
 
-            let (sk, pk) = match SignatureScheme::from_str(&arg.scheme) {
+            let (sk, pk) = match scheme {
                 Ok(SignatureScheme::Ed25519) => {
                     let kp = Ed25519KeyPair::generate(rng);
                     (
@@ -159,6 +184,7 @@ fn execute(cmd: Command) -> Result<(), FastCryptoError> {
                         Hex::encode(kp.public().as_ref()),
                     )
                 }
+                Ok(SignatureScheme::Falcon512) => unreachable!("handled above"),
                 Err(_) => return Err(FastCryptoError::InvalidInput),
             };
             println!("Private key in hex: {:?}", sk);
@@ -225,6 +251,14 @@ fn execute(cmd: Command) -> Result<(), FastCryptoError> {
                         Hex::encode(kp.sign(&msg).as_ref()),
                     )
                 }
+                Ok(SignatureScheme::Falcon512) => {
+                    // The public key is derived from the secret key (h = g/f).
+                    let kp = Falcon512KeyPair::from(Falcon512PrivateKey::from_bytes(&sk)?);
+                    (
+                        Hex::encode(kp.public()),
+                        Hex::encode(kp.sign(&msg).as_ref()),
+                    )
+                }
                 Err(_) => return Err(FastCryptoError::InvalidInput),
             };
             println!("Signature in hex: {:?}", sig);
@@ -279,6 +313,11 @@ fn execute(cmd: Command) -> Result<(), FastCryptoError> {
                         &fastcrypto::bls12381::min_pk::BLS12381Signature::from_bytes(&sig)?,
                     )
                 }
+                Ok(SignatureScheme::Falcon512) => {
+                    let pk = Falcon512PublicKey::from_bytes(&pk)
+                        .map_err(|_| FastCryptoError::InvalidInput)?;
+                    pk.verify(&msg, &Falcon512Signature::from_bytes(&sig)?)
+                }
                 Err(_) => return Err(FastCryptoError::InvalidInput),
             };
             println!("Verify result: {:?}", res);
@@ -291,7 +330,7 @@ fn execute(cmd: Command) -> Result<(), FastCryptoError> {
 mod tests {
     use crate::{execute, Command, KeygenArguments, SigningArguments, VerifiyingArguments};
     use fastcrypto::error::FastCryptoError;
-    use fastcrypto_cli::sigs_cli_test_vectors::{MSG, SEED, TEST_CASES};
+    use fastcrypto_cli::sigs_cli_test_vectors::{FALCON512_SEED, MSG, SEED, TEST_CASES};
 
     fn test_keygen_single(scheme: &str, seed: &str) -> Result<(), FastCryptoError> {
         execute(Command::Keygen(KeygenArguments {
@@ -302,9 +341,14 @@ mod tests {
 
     #[test]
     fn test_keygen() {
-        // Valid
+        // Valid; falcon512 takes the raw 48-byte seed, the rest 32 via StdRng.
         for test_case in TEST_CASES {
-            assert!(test_keygen_single(test_case.name, SEED).is_ok());
+            let seed = if test_case.name == "falcon512" {
+                FALCON512_SEED
+            } else {
+                SEED
+            };
+            assert!(test_keygen_single(test_case.name, seed).is_ok());
         }
 
         // Unknown scheme
@@ -315,6 +359,10 @@ mod tests {
         for test_case in TEST_CASES {
             assert!(test_keygen_single(test_case.name, invalid_seed).is_err());
         }
+
+        // Wrong seed length for the scheme.
+        assert!(test_keygen_single("falcon512", SEED).is_err());
+        assert!(test_keygen_single("ed25519", FALCON512_SEED).is_err());
     }
 
     fn test_sign_single(scheme: &str, msg: &str, secret_key: &str) -> Result<(), FastCryptoError> {

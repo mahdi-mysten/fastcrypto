@@ -88,6 +88,18 @@ pub mod secp256k1_group_tests;
 #[path = "tests/merkle_tests.rs"]
 pub mod merkle_tests;
 
+#[cfg(test)]
+#[path = "tests/falcon512_verify_tests.rs"]
+pub mod falcon512_verify_tests;
+
+#[cfg(all(test, feature = "falcon-sign"))]
+#[path = "tests/falcon512_tests.rs"]
+pub mod falcon512_tests;
+
+#[cfg(all(test, feature = "falcon-sign"))]
+#[path = "tests/falcon512_sign_tests.rs"]
+pub mod falcon512_sign_tests;
+
 pub mod traits;
 
 #[cfg(feature = "aes")]
@@ -97,6 +109,7 @@ pub mod bulletproofs;
 pub mod ed25519;
 pub mod encoding;
 pub mod error;
+pub mod falcon512;
 pub mod groups;
 pub mod hash;
 pub mod hmac;
