@@ -102,6 +102,8 @@ pub mod hash;
 pub mod hmac;
 pub mod jwt_utils;
 pub mod merkle;
+#[cfg(feature = "mldsa65")]
+pub mod mldsa65;
 pub mod nitro_attestation;
 pub mod nizk;
 pub mod pedersen;

@@ -69,6 +69,10 @@ itertools = "0.12.0"
 twox-hash = { version = "1.6.3", optional = true }
 serde-big-array = { version = "0.5.0", optional = true }
 
+# Required for the mldsa65 feature. Pinned exactly: the PQDSA API lives behind
+# aws-lc-rs's `unstable` feature and may change between releases.
+aws-lc-rs = { version = "=1.17.3", features = ["unstable"], optional = true }
+
 # Required for the aes feature
 aes = { version = "0.8.2", optional = true }
 ctr = { version = "0.9.2", optional = true }
@@ -136,6 +140,10 @@ aes = ["dep:aes", "dep:cbc", "dep:aes-gcm", "dep:ctr", "dep:aes-gcm-siv"]
 
 # Needs to be enabled for wasm targets.
 wasm = ["dep:getrandom"]
+
+# Include ML-DSA-65 (FIPS 204). Off by default because aws-lc-sys does not build
+# on wasm32-unknown-unknown and fastcrypto has wasm consumers.
+mldsa65 = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 criterion = "0.5.1"
